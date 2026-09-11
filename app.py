@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy.stats import poisson
+import math
 from datetime import datetime, timedelta
 
 # -----------------------------------------------------------------------------
@@ -14,10 +14,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS Customizado Otimizado para Ecrã OLED de iPhone
 st.markdown("""
 <style>
-    /* Fundo Noturno de Estádio com Overlay Escuro */
     .stApp {
         background: 
             linear-gradient(rgba(11, 15, 25, 0.92), rgba(11, 15, 25, 0.97)),
@@ -129,15 +127,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. MOTOR ESTATÍSTICO (POISSON & 7 MERCADOS)
+# 2. MOTOR ESTATÍSTICO NATIVO (POISSON MATEMÁTICO SEM SCIPY)
 # -----------------------------------------------------------------------------
+def poisson_pmf(k, mu):
+    """Cálculo direto da PMF de Poisson: P(k; mu) = (mu^k * e^-mu) / k!"""
+    return (math.pow(mu, k) * math.exp(-mu)) / math.factorial(k)
+
 def calcular_probabilidades_jogo(lambda_casa, lambda_fora):
     max_golos = 8
     matriz = np.zeros((max_golos, max_golos))
     
     for i in range(max_golos):
         for j in range(max_golos):
-            matriz[i, j] = poisson.pmf(i, lambda_casa) * poisson.pmf(j, lambda_fora)
+            matriz[i, j] = poisson_pmf(i, lambda_casa) * poisson_pmf(j, lambda_fora)
             
     prob_casa = float(np.sum(np.tril(matriz, -1)))
     prob_empate = float(np.sum(np.diag(matriz)))
@@ -148,7 +150,7 @@ def calcular_probabilidades_jogo(lambda_casa, lambda_fora):
     matriz_ht = np.zeros((max_golos, max_golos))
     for i in range(max_golos):
         for j in range(max_golos):
-            matriz_ht[i, j] = poisson.pmf(i, lambda_casa_ht) * poisson.pmf(j, lambda_fora_ht)
+            matriz_ht[i, j] = poisson_pmf(i, lambda_casa_ht) * poisson_pmf(j, lambda_fora_ht)
             
     prob_casa_ht = float(np.sum(np.tril(matriz_ht, -1)))
     prob_fora_ht = float(np.sum(np.triu(matriz_ht, 1)))
