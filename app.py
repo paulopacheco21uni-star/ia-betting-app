@@ -1,133 +1,91 @@
+import pandas as pd
+import numpy as np
 import math
 import streamlit as st
 
-st.set_page_config(
-    page_title="IA Betting Analyst", page_icon="⚽", layout="wide"
+st.set_page_config(page_title="IA Betting Screener", page_icon="🎯", layout="wide")
+
+st.title("🎯 IA Betting Screener — Scanner de Oportunidades")
+st.caption("Filtro automático de jogos com EV+ (Poisson + Dixon-Coles Matrix)")
+
+# Sidebar - Filtros Globais
+st.sidebar.header("🎛️ Filtros de Oportunidades")
+
+mercado_filtro = st.sidebar.selectbox(
+    "Mercado Principal", 
+    ["Todos", "Vitória Casa (1)", "Ambas Marcam (Sim)", "Over 2.5 Golos", "Vitória Casa ao Intervalo (1 HT)"]
 )
 
-st.title("⚽ IA Betting Analyst — Painel de Análise On-Demand")
-st.caption("Modelo Estatístico Poisson + Ponderação Tática + Cálculo EV+")
+min_ev = st.sidebar.slider("Valor Esperado Mínimo (EV+ %)", 0.0, 20.0, 3.0, 0.5)
+min_odd = st.sidebar.number_input("Odd Mínima", value=1.50, step=0.05)
+max_odd = st.sidebar.number_input("Odd Máxima", value=4.00, step=0.05)
 
-st.sidebar.header("⚙️ Gestão de Banca")
-banca_total = st.sidebar.number_input(
-    "Valor Total da Banca (€)", value=1000.0, step=50.0
-)
-kelly_fraction = st.sidebar.slider(
-    "Fracção de Kelly (Controlo de Risco)", 0.1, 0.5, 0.25, 0.05
-)
+# Simulação de Base de Dados de Jogos do Dia (Substituível por Scraper/API)
+@st.cache_data
+def carregar_jogos_dia():
+    dados = [
+        {"Jogo": "Freiburg vs Monchengladbach", "Liga": "Bundesliga", "xG_C": 1.85, "xG_F": 0.90, "Odd_1": 1.75, "Odd_BTTS": 1.80, "Odd_O25": 1.70, "Odd_HT1": 2.30},
+        {"Jogo": "Benfica vs Braga", "Liga": "Liga Portugal", "xG_C": 2.10, "xG_F": 1.30, "Odd_1": 1.65, "Odd_BTTS": 1.65, "Odd_O25": 1.55, "Odd_HT1": 2.15},
+        {"Jogo": "Sevilla vs Betis", "Liga": "La Liga", "xG_C": 1.10, "xG_F": 1.05, "Odd_1": 2.40, "Odd_BTTS": 1.95, "Odd_O25": 2.20, "Odd_HT1": 3.10},
+        {"Jogo": "Arsenal vs Everton", "Liga": "Premier League", "xG_C": 2.40, "xG_F": 0.60, "Odd_1": 1.35, "Odd_BTTS": 2.10, "Odd_O25": 1.50, "Odd_HT1": 1.80},
+        {"Jogo": "Lazio vs Fiorentina", "Liga": "Serie A", "xG_C": 1.40, "xG_F": 1.20, "Odd_1": 2.10, "Odd_BTTS": 1.75, "Odd_O25": 1.90, "Odd_HT1": 2.80},
+    ]
+    return pd.DataFrame(dados)
 
-st.subheader("🔍 Pesquisa e Parâmetros do Jogo")
+df_jogos = carregar_jogos_dia()
 
-col1, col2 = st.columns(2)
-with col1:
-    equipa_casa = st.text_input("Equipa da Casa", "Freiburg")
-    xg_casa = st.number_input(
-        f"Média xG / Golos {equipa_casa} (Casa)", value=1.85, step=0.05
-    )
-    ausencias_casa = st.slider(
-        f"Impacto Ausências/Desgaste {equipa_casa} (%)", -20, 20, 0
-    )
+# Motor do Algoritmo de Poisson
+def calcular_metricas(row):
+    l_c, l_f = row['xG_C'], row['xG_F']
+    
+    p_1, p_btts, p_o25, p_ht1 = 0.0, 0.0, 0.0, 0.0
+    
+    for gc in range(6):
+        for gf in range(6):
+            prob = ((math.exp(-l_c) * (l_c**gc)) / math.factorial(gc)) * \
+                   ((math.exp(-l_f) * (l_f**gf)) / math.factorial(gf))
+            
+            if gc > gf: p_1 += prob
+            if gc > 0 and gf > 0: p_btts += prob
+            if (gc + gf) > 2.5: p_o25 += prob
+            if gc > gf and (gc >= 1): p_ht1 += prob * 0.65  # Aproximação estocástica HT
+            
+    return pd.Series([
+        (p_1 * row['Odd_1']) - 1,
+        (p_btts * row['Odd_BTTS']) - 1,
+        (p_o25 * row['Odd_O25']) - 1,
+        (p_ht1 * row['Odd_HT1']) - 1
+    ])
 
-with col2:
-    equipa_fora = st.text_input("Equipa Fora", "Monchengladbach")
-    xg_fora = st.number_input(
-        f"Média xG / Golos {equipa_fora} (Fora)", value=0.90, step=0.05
-    )
-    ausencias_fora = st.slider(
-        f"Impacto Ausências/Desgaste {equipa_fora} (%)", -20, 20, -10
-    )
+df_jogos[['EV_1', 'EV_BTTS', 'EV_O25', 'EV_HT1']] = df_jogos.apply(calcular_metricas, axis=1) * 100
 
-st.divider()
+# Filtragem Dinâmica
+resultados = []
 
-col_odds1, col_odds2, col_odds3 = st.columns(3)
-with col_odds1:
-    odd_casa = st.number_input(f"Odd Casa ({equipa_casa})", value=1.68, step=0.01)
-with col_odds2:
-    odd_empate = st.number_input("Odd Empate (X)", value=3.90, step=0.01)
-with col_odds3:
-    odd_btts = st.number_input("Odd Ambas Marcam (Sim)", value=1.75, step=0.01)
+for idx, row in df_jogos.iterrows():
+    m_list = [
+        ("Vitória Casa (1)", row['Odd_1'], row['EV_1']),
+        ("Ambas Marcam (Sim)", row['Odd_BTTS'], row['EV_BTTS']),
+        ("Over 2.5 Golos", row['Odd_O25'], row['EV_O25']),
+        ("Vitória Casa ao Intervalo (1 HT)", row['Odd_HT1'], row['EV_HT1'])
+    ]
+    
+    for nome_m, odd, ev in m_list:
+        if (mercado_filtro == "Todos" or mercado_filtro == nome_m) and (ev >= min_ev) and (min_odd <= odd <= max_odd):
+            resultados.append({
+                "Jogo": row['Jogo'],
+                "Liga": row['Liga'],
+                "Mercado Recomen.": nome_m,
+                "Odd Mercado": f"{odd:.2f}",
+                "Expected Value": f"+{ev:.1f}%"
+            })
 
+df_final = pd.DataFrame(resultados)
 
-def poisson_prob(k, lambda_param):
-    return (math.exp(-lambda_param) * (lambda_param**k)) / math.factorial(k)
+# Apresentação do Feed Filtrado
+st.subheader("📋 Oportunidades Detetadas com Valor (+EV)")
 
-
-lambda_casa = max(0.2, xg_casa * (1 + (ausencias_casa / 100)))
-lambda_fora = max(0.2, xg_fora * (1 + (ausencias_fora / 100)))
-
-prob_casa_win = 0.0
-prob_empate = 0.0
-prob_fora_win = 0.0
-prob_btts = 0.0
-
-for g_casa in range(6):
-    for g_fora in range(6):
-        p = poisson_prob(g_casa, lambda_casa) * poisson_prob(
-            g_fora, lambda_fora
-        )
-        if g_casa > g_fora:
-            prob_casa_win += p
-        elif g_casa == g_fora:
-            prob_empate += p
-        else:
-            prob_fora_win += p
-
-        if g_casa > 0 and g_fora > 0:
-            prob_btts += p
-
-ev_casa = (prob_casa_win * odd_casa) - 1
-ev_btts = (prob_btts * odd_btts) - 1
-
-
-def calc_kelly(prob, odd, banca, fraction):
-    b = odd - 1
-    q = 1 - prob
-    f_star = ((b * prob) - q) / b
-    if f_star <= 0:
-        return 0.0, 0.0
-    stake_percent = f_star * fraction
-    stake_euros = banca * stake_percent
-    return stake_percent * 100, stake_euros
-
-
-stake_pct_casa, stake_eur_casa = calc_kelly(
-    prob_casa_win, odd_casa, banca_total, kelly_fraction
-)
-stake_pct_btts, stake_eur_btts = calc_kelly(
-    prob_btts, odd_btts, banca_total, kelly_fraction
-)
-
-if st.button("🚀 Processar Análise e Calcular Valor", use_container_width=True):
-    st.subheader("📊 Relatório de Saída da IA")
-
-    res1, res2 = st.columns(2)
-
-    with res1:
-        st.markdown(f"### Vitória Direta: **{equipa_casa}**")
-        st.write(f"• **Probabilidade Real Estimada:** `{prob_casa_win*100:.1f}%`")
-        st.write(
-            f"• **Odd Justa (Fair Odd):** `{1/prob_casa_win:.2f}` vs **Odd Casa:** `{odd_casa:.2f}`"
-        )
-        st.write(f"• **Expected Value (EV+):** `{ev_casa*100:+.1f}%`")
-
-        if ev_casa > 0:
-            st.success(
-                f"✅ **VALOR DETETADO!**\n\nRecomendação de Aposta: **{stake_eur_casa:.2f}€** ({stake_pct_casa:.1f}% da banca)"
-            )
-        else:
-            st.error("❌ **SEM VALOR.** A odd da casa está abaixo da odd justa.")
-
-    with res2:
-        st.markdown("### Mercado: **Ambas Marcam (BTTS)**")
-        st.write(f"• **Probabilidade Real Estimada:** `{prob_btts*100:.1f}%`")
-        st.write(
-            f"• **Odd Justa (Fair Odd):** `{1/prob_btts:.2f}` vs **Odd Casa:** `{odd_btts:.2f}`"
-        )
-        st.write(f"• **Expected Value (EV+):** `{ev_btts*100:+.1f}%`")
-
-        if ev_btts > 0:
-            st.success(
-                f"✅ **VALOR DETETADO!**\n\nRecomendação de Aposta: **{stake_eur_btts:.2f}€** ({stake_pct_btts:.1f}% da banca)"
-            )
-        else:
-            st.error("❌ **SEM VALOR.** A odd da casa está abaixo da odd justa.")
+if not df_final.empty:
+    st.dataframe(df_final, use_container_width=True)
+else:
+    st.warning("Nenhum jogo encontrado com os filtros atuais. Reduz o EV% mínimo ou alarga o limite de Odds.")
